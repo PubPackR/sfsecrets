@@ -11,7 +11,8 @@ import os
 from ._backends import secret_get_env, secret_get_file, secret_get_gsm
 from ._legacy_map import FILES, SERVICES
 
-__all__ = ["secret_get", "backend", "is_production", "SERVICES", "FILES"]
+__all__ = ["secret_get", "secret_cache_clear", "backend", "is_production",
+           "SERVICES", "FILES"]
 
 _CACHE = {}
 
@@ -60,3 +61,10 @@ def secret_get(name, version="latest", key_dir=None):
 
     _CACHE[key] = value
     return value
+
+
+def secret_cache_clear():
+    """Drop every cached value. The rotation runbook's answer for a
+    long-running process that must pick up a new version without restarting.
+    """
+    _CACHE.clear()
