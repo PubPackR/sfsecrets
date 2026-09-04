@@ -1,0 +1,31 @@
+[project]
+name = "sfsecrets"
+version = "0.1.0"
+description = "Credential resolution for Studyflix Python apps -- the Python twin of secretsR."
+readme = "README.md"
+# Matches the production interpreter on shiny.studyflix.info (/usr/bin/python3 == 3.12.3).
+requires-python = ">=3.12"
+dependencies = [
+    # Pinned to the version confirmed installed on shiny.studyflix.info, because
+    # production consumes this package as a git submodule with no install step --
+    # the host's hand-installed packages are what actually get imported.
+    "cryptography==46.0.4",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sfsecrets"]
+
+[tool.pyright]
+include = ["sfsecrets"]
+ignore = ["tests"]  # fake-based tests are intentionally untyped
+typeCheckingMode = "basic"
+reportMissingModuleSource = false
