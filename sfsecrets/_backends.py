@@ -60,10 +60,42 @@ def secret_get_file(name, key_dir=None):
 
     if len(parts) == 1:
         return parts[0]
-    # Several legacy files, one secret. Rebuild the object the gsm backend
-    # returns for this name, so the two are comparable rather than merely both
-    # "working". For postgresql that is the server JSON plus the password.
-    merged = json.loads(parts[0])
+    return _join_legacy_parts(name, parts)
+
+
+def _join_legacy_parts(name, parts):
+    """Join several legacy files into the one object the gsm backend would
+    return for `name`, so the two backends are comparable rather than merely
+    both "working". Today this is a single shape -- a JSON object plus a
+    trailing password field -- because `studyflix-postgresql-connection` is
+    the only multi-file secret _legacy_map has. That shape is NOT declared in
+    _legacy_map (a fourth FILES field), which is otherwise meant to be pure
+    data ("adding a secret is a row, not code"): a join *rule* still has to be
+    code somewhere, and inventing a small enum of join-strategies for exactly
+    one instance moves the label into data without removing the code, or the
+    risk, from here. So this function keeps the join, but refuses silently:
+    a secret with a join shape this doesn't understand raises a clear error
+    instead of returning a wrong object with no indication anything is off --
+    which matters because E2 has to prove `file` and `gsm` return the same
+    shape for every secret, and a silently-wrong file-backend result would
+    make that comparison meaningless rather than failing it.
+    """
+    if len(parts) != 2:
+        raise RuntimeError(
+            "%s: the file backend only knows how to join exactly 2 legacy "
+            "files (a JSON object plus a password) into one secret, got %d. "
+            "Add a join rule for this shape to _join_legacy_parts." % (name, len(parts)))
+    try:
+        merged = json.loads(parts[0])
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "%s: the file backend expected the first of its 2 legacy files to "
+            "be a JSON object to merge the second file's password into, but "
+            "it did not parse as JSON (%s)." % (name, exc)) from exc
+    if not isinstance(merged, dict):
+        raise RuntimeError(
+            "%s: the file backend expected the first of its 2 legacy files to "
+            "decode to a JSON object, got %s." % (name, type(merged).__name__))
     merged["password"] = parts[1]
     return json.dumps(merged)
 

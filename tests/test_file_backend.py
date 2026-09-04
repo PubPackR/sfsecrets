@@ -2,6 +2,7 @@ import base64, hashlib, json
 import pytest
 from cryptography.fernet import Fernet
 import sfsecrets
+import sfsecrets._backends as backends
 
 
 def test_file_backend_joins_the_legacy_pair_into_one_object(tmp_path, monkeypatch):
@@ -55,3 +56,48 @@ def test_two_key_dirs_in_one_process_do_not_share(tmp_path, monkeypatch):
     b = json.loads(sfsecrets.secret_get(
         "studyflix-postgresql-connection", key_dir=str(tmp_path / "second")))
     assert a["host"] == "first" and b["host"] == "second"
+
+
+def test_a_three_file_secret_refuses_instead_of_silently_dropping_a_part(tmp_path, monkeypatch):
+    """The join rule in _join_legacy_parts only knows one shape: exactly 2
+    files, a JSON object plus a trailing password. A hypothetical 3-file
+    secret must not silently return an object built from only the first 2
+    parts with the 3rd dropped -- it must refuse with a clear error, since
+    nothing else would ever surface the missing part."""
+    master = "m3"
+    cipher = Fernet(base64.urlsafe_b64encode(hashlib.sha256(master.encode()).digest()))
+    d = tmp_path / "Three_Part"
+    d.mkdir(parents=True)
+    (d / "a.txt").write_bytes(cipher.encrypt(json.dumps({"x": 1}).encode()))
+    (d / "b.txt").write_bytes(cipher.encrypt(b"part-b"))
+    (d / "c.txt").write_bytes(cipher.encrypt(b"part-c"))
+
+    monkeypatch.setenv("DB_MASTER_KEY", master)
+    monkeypatch.delenv("SF_SECRET_BACKEND", raising=False)
+    monkeypatch.setitem(backends.FILES, "test-three-part-secret", (
+        ("Three_Part/a.txt", "Three_Part/b.txt", "Three_Part/c.txt"),
+        "derived", "DB_MASTER_KEY"))
+
+    with pytest.raises(RuntimeError, match="exactly 2 legacy files"):
+        sfsecrets.secret_get("test-three-part-secret", key_dir=str(tmp_path))
+
+
+def test_a_two_file_secret_whose_first_part_is_not_json_refuses_clearly(tmp_path, monkeypatch):
+    """If the first of the 2 files does not decode to a JSON object, merging a
+    password into it makes no sense -- refuse rather than raise a bare
+    json.JSONDecodeError (or, worse, succeed with a wrong shape)."""
+    master = "m4"
+    cipher = Fernet(base64.urlsafe_b64encode(hashlib.sha256(master.encode()).digest()))
+    d = tmp_path / "Not_Json"
+    d.mkdir(parents=True)
+    (d / "a.txt").write_bytes(cipher.encrypt(b"not-json-at-all"))
+    (d / "b.txt").write_bytes(cipher.encrypt(b"password"))
+
+    monkeypatch.setenv("DB_MASTER_KEY", master)
+    monkeypatch.delenv("SF_SECRET_BACKEND", raising=False)
+    monkeypatch.setitem(backends.FILES, "test-non-json-secret", (
+        ("Not_Json/a.txt", "Not_Json/b.txt"),
+        "derived", "DB_MASTER_KEY"))
+
+    with pytest.raises(RuntimeError, match="JSON object"):
+        sfsecrets.secret_get("test-non-json-secret", key_dir=str(tmp_path))
