@@ -1,3 +1,5 @@
+import os
+
 import pytest
 import sfsecrets
 
@@ -45,15 +47,39 @@ def test_gsm_is_not_implemented_yet(monkeypatch):
 def test_a_directory_at_the_credentials_path_is_production(tmp_path, monkeypatch):
     """On 2026-09-02 a misconfigured bind mount put a DIRECTORY at
     GOOGLE_APPLICATION_CREDENTIALS. os.path.exists() is True for a directory,
-    so the R equivalent of this code entered production mode, refused the file
-    backend, and could not authenticate with gsm either -- every dashboard went
-    down, twice, across three attempts to fix it. That is deliberate, load-
-    bearing behaviour, not an oversight: is_production() must key off EXISTENCE
-    (os.path.exists), never readability or file-ness (os.path.isfile /
-    os.access), or a future refactor would silently reverse the incident's
-    fix and nothing would notice."""
+    so the R equivalent of this code entered production mode and refused the
+    file backend -- deliberately, not an oversight. The outage happened twice,
+    on two successive deploys that day, while three different designs for
+    where the key lives were tried: 0400 owned by uid 997 (caught before any
+    deploy by the role's own uid probe), 0700 root:root under /etc (deployed,
+    failed), and /home/application-user/gsm (deployed, worked). is_production()
+    must keep keying off EXISTENCE, never readability or file-ness (os.path.isfile
+    / os.access), or a future refactor would silently reverse this."""
     gac = tmp_path / "sa.json"
     gac.mkdir()
     monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(gac))
 
     assert sfsecrets.is_production() is True
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="os.chmod cannot make a directory unreadable to its own owner on "
+           "Windows, so exists() and access(R_OK) can't be forced apart here. "
+           "The production host is Linux, where this guard is meaningful.",
+)
+def test_an_unreadable_credentials_path_is_still_production(tmp_path, monkeypatch):
+    """exists() and access(R_OK) agree on an ordinary readable directory, so a
+    mutation from exists() to an os.access() readability check would slip past
+    every other test here undetected. An unreadable directory is the only way
+    to force the two apart: exists() stays True, access(..., os.R_OK) becomes
+    False. is_production() must still say True -- existence, not readability,
+    is what secretsR checks and what this mirrors."""
+    gac = tmp_path / "sa.json"
+    gac.mkdir()
+    os.chmod(gac, 0o000)
+    try:
+        monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(gac))
+        assert sfsecrets.is_production() is True
+    finally:
+        os.chmod(gac, 0o700)
