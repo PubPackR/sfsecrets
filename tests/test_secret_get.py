@@ -40,3 +40,20 @@ def test_gsm_is_not_implemented_yet(monkeypatch):
     monkeypatch.setenv("SF_SECRET_BACKEND", "gsm")
     with pytest.raises(NotImplementedError, match="E2"):
         sfsecrets.secret_get("studyflix-crm-api-key")
+
+
+def test_a_directory_at_the_credentials_path_is_production(tmp_path, monkeypatch):
+    """On 2026-09-02 a misconfigured bind mount put a DIRECTORY at
+    GOOGLE_APPLICATION_CREDENTIALS. os.path.exists() is True for a directory,
+    so the R equivalent of this code entered production mode, refused the file
+    backend, and could not authenticate with gsm either -- every dashboard went
+    down, twice, across three attempts to fix it. That is deliberate, load-
+    bearing behaviour, not an oversight: is_production() must key off EXISTENCE
+    (os.path.exists), never readability or file-ness (os.path.isfile /
+    os.access), or a future refactor would silently reverse the incident's
+    fix and nothing would notice."""
+    gac = tmp_path / "sa.json"
+    gac.mkdir()
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(gac))
+
+    assert sfsecrets.is_production() is True
