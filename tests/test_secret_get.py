@@ -37,11 +37,11 @@ def test_the_value_is_cached_for_the_process(monkeypatch):
     assert sfsecrets.secret_get("studyflix-crm-api-key") == "first"
 
 
-def test_gsm_is_not_implemented_yet(monkeypatch):
-    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+def test_gsm_is_routed_to_the_gsm_backend(monkeypatch):
+    """secret_get must dispatch to the gsm backend, not merely accept the name."""
     monkeypatch.setenv("SF_SECRET_BACKEND", "gsm")
-    with pytest.raises(NotImplementedError, match="E2"):
-        sfsecrets.secret_get("studyflix-crm-api-key")
+    monkeypatch.setattr(sfsecrets, "secret_get_gsm", lambda n, v: "from-gsm")
+    assert sfsecrets.secret_get("studyflix-postgresql-connection") == "from-gsm"
 
 
 def test_a_directory_at_the_credentials_path_is_production(tmp_path, monkeypatch):

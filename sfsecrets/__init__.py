@@ -8,7 +8,8 @@ dependency-installation step and the deploy only rsyncs files.
 """
 import os
 
-from ._backends import secret_get_env, secret_get_file, secret_get_gsm
+from ._backends import secret_get_env, secret_get_file
+from ._gsm import secret_get_gsm
 from ._legacy_map import FILES, SERVICES
 
 __all__ = ["secret_get", "secret_cache_clear", "backend", "is_production",

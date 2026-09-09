@@ -105,8 +105,3 @@ def secret_get_env(name):
     if var not in os.environ:
         raise KeyError("%s is not set" % var)
     return os.environ[var]
-
-
-def secret_get_gsm(name, version):
-    raise NotImplementedError(
-        "the gsm backend arrives in E2. E1 is the file backend only.")
