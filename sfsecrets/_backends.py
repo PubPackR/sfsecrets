@@ -28,7 +28,7 @@ def _fernet_for(derivation, env_var):
             "%s is not a usable Fernet key for a %r secret." % (env_var, derivation))
 
 
-def secret_get_file(name, key_dir=None):
+def secret_get_file(name, key_dir=None, version="latest"):
     """Resolve from keys/. `key_dir` is an ARGUMENT, never process state.
 
     An earlier draft read it from SF_KEY_DIR set by the caller with
@@ -37,6 +37,11 @@ def secret_get_file(name, key_dir=None):
     review: the second returned the first's host, database and user with no
     error. base-65's own test suite exercises exactly that via tmp_path.
     """
+    if version != "latest":
+        raise ValueError(
+            "the file backend cannot resolve a specific version (%r asked for "
+            "%r). keys/ holds one copy of each secret with no history. Use the "
+            "gsm backend, or drop the version." % (name, version))
     if name not in FILES:
         raise KeyError(
             "%s has no file-backend mapping. Add it to _legacy_map.FILES." % name)

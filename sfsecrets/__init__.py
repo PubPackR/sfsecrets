@@ -52,7 +52,7 @@ def secret_get(name, version="latest", key_dir=None):
             "Set SF_SECRET_BACKEND=gsm." % chosen)
 
     if chosen == "file":
-        value = secret_get_file(name, key_dir)
+        value = secret_get_file(name, key_dir, version)
     elif chosen == "env":
         value = secret_get_env(name)
     elif chosen == "gsm":

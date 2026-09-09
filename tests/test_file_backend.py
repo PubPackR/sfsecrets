@@ -101,3 +101,21 @@ def test_a_two_file_secret_whose_first_part_is_not_json_refuses_clearly(tmp_path
 
     with pytest.raises(RuntimeError, match="JSON object"):
         sfsecrets.secret_get("test-non-json-secret", key_dir=str(tmp_path))
+
+
+def test_the_file_backend_refuses_a_pinned_version(tmp_path):
+    """secret_get accepts a version; the file backend cannot honour one. Before
+    this it ignored the argument and returned whatever the file held -- the
+    defect shape this project keeps meeting: a parameter accepted and ignored."""
+    with pytest.raises(ValueError, match="cannot resolve a specific version"):
+        backends.secret_get_file("studyflix-postgresql-connection",
+                                 key_dir=str(tmp_path), version="3")
+
+
+def test_the_file_backend_still_accepts_latest(monkeypatch, tmp_path):
+    """The default must keep working -- every caller today passes nothing. Getting
+    FileNotFoundError rather than ValueError proves it reached the file lookup."""
+    monkeypatch.setenv("ADMANAGER_DECRYPT_KEY", Fernet.generate_key().decode())
+    with pytest.raises(FileNotFoundError):
+        backends.secret_get_file("studyflix-admanager-service-account",
+                                 key_dir=str(tmp_path), version="latest")
