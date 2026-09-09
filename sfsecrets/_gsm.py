@@ -13,12 +13,33 @@ import base64
 import binascii
 import json
 import os
+import requests
 from urllib.parse import quote
 
 DEFAULT_PROJECT = "studyflix-secrets"
 SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 TIMEOUT_SECONDS = 10
+RETRY_STATUSES = (408, 429, 500, 502, 503, 504)
 _SESSION = None
+
+
+def _retry_policy():
+    """Three tries over transient statuses and connection failures.
+
+    Safe ONLY because versions/{v}:access is an idempotent GET. Do not copy this
+    policy to a mutating call.
+
+    raise_on_status=False so an exhausted 5xx comes back as a response and can be
+    mapped to a message naming the secret; urllib3's own RetryError names neither
+    the secret nor the status, which is useless in a job resolving several. The
+    worst case is bounded by arithmetic rather than a total-time setting, which
+    urllib3 does not offer: three attempts at a 10s timeout plus backoff sleeps
+    of 0s, 2s and 4s stays under 40 seconds.
+    """
+    from urllib3.util.retry import Retry
+
+    return Retry(total=3, backoff_factor=1, status_forcelist=list(RETRY_STATUSES),
+                 allowed_methods=["GET"], raise_on_status=False)
 
 
 def _project_from_key():
@@ -106,12 +127,14 @@ def _session():
     import google.auth
     from google.auth.exceptions import DefaultCredentialsError
     from google.auth.transport.requests import AuthorizedSession
+    from requests.adapters import HTTPAdapter
 
     try:
         credentials, _ = google.auth.default(scopes=[SCOPE])
     except DefaultCredentialsError as exc:
         raise RuntimeError("GSM: %s" % _no_credentials_message()) from exc
     _SESSION = AuthorizedSession(credentials)
+    _SESSION.mount("https://", HTTPAdapter(max_retries=_retry_policy()))
     return _SESSION
 
 
@@ -126,7 +149,42 @@ def secret_get_gsm(name, version="latest"):
     url = ("https://secretmanager.googleapis.com/v1/projects/%s/secrets/%s"
            "/versions/%s:access"
            % (project, quote(name, safe=""), quote(str(version), safe="")))
-    response = _session().get(url, timeout=TIMEOUT_SECONDS)
+    try:
+        response = _session().get(url, timeout=TIMEOUT_SECONDS)
+    except requests.exceptions.ConnectionError as exc:
+        raise RuntimeError(
+            "GSM: could not reach Secret Manager for %r after retries (%s). "
+            "Check network and DNS from this host." % (name, exc)) from exc
+    except requests.exceptions.Timeout as exc:
+        raise RuntimeError(
+            "GSM: request for %r timed out after retries. Check network and DNS "
+            "from this host." % name) from exc
+
+    status = response.status_code
+    if status == 401:
+        _session_reset()
+        raise RuntimeError(
+            "GSM: authentication rejected for %r. The session has been discarded; "
+            "the next call will re-authenticate. %s"
+            % (name, _no_credentials_message()))
+    if status == 403:
+        raise RuntimeError(
+            "GSM: access denied for %r in project %r. The calling principal needs "
+            "roles/secretmanager.secretAccessor on this secret." % (name, project))
+    if status == 404:
+        raise RuntimeError(
+            "GSM: secret %r (version %s) not found in project %r."
+            % (name, version, project))
+    if status == 400:
+        raise RuntimeError(
+            "GSM: bad request for %r version %s. If the newest version is "
+            "disabled, 'latest' fails -- pin an explicit version."
+            % (name, version))
+    if status != 200:
+        raise RuntimeError(
+            "GSM: request for %r version %s failed after retries with HTTP %s in "
+            "project %r. Check the Secret Manager service status."
+            % (name, version, status, project))
     return _payload_of(response, name, version)
 
 
