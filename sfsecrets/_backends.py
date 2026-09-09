@@ -93,10 +93,21 @@ def _join_legacy_parts(name, parts):
     try:
         merged = json.loads(parts[0])
     except json.JSONDecodeError as exc:
+        # json.JSONDecodeError sets .doc to the string it failed to parse --
+        # here parts[0], the DECRYPTED contents of the first legacy file (host,
+        # port, dbname, user for studyflix-postgresql-connection). The password
+        # is parts[1] and is never in .doc, so this is connection metadata, not
+        # the credential itself -- still not something to keep reachable.
+        # str(exc) is clean (verified: the "Expecting value: line 1 column 1"
+        # form), so it is safe to keep in the message; `from None` drops the
+        # exception object itself so .doc/vars() cannot be reached via
+        # __cause__ by a logger that serialises it. Same pattern as _gsm.py's
+        # UnicodeDecodeError handling; left uncovered there because that leak
+        # sweep was scoped to _gsm.py only.
         raise RuntimeError(
             "%s: the file backend expected the first of its 2 legacy files to "
             "be a JSON object to merge the second file's password into, but "
-            "it did not parse as JSON (%s)." % (name, exc)) from exc
+            "it did not parse as JSON (%s)." % (name, exc)) from None
     if not isinstance(merged, dict):
         raise RuntimeError(
             "%s: the file backend expected the first of its 2 legacy files to "

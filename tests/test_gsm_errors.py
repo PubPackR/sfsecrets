@@ -105,6 +105,46 @@ def test_a_refresh_error_names_the_secret_and_the_project(with_session):
     assert "revoked" in str(err.value)
 
 
+def test_a_transport_error_names_the_secret_and_the_project(with_session):
+    """I2b/Finding 1: TransportError is ALSO raised from
+    credentials.before_request() inside AuthorizedSession.request, BEFORE any
+    HTTP call -- but unlike RefreshError it is not Google rejecting the
+    credentials, it is google-auth's own requests.Session failing to reach
+    oauth2.googleapis.com. TransportError subclasses GoogleAuthError, not
+    requests.exceptions.*, so neither the ConnectionError nor the Timeout
+    handler catches it, and it would otherwise propagate raw, naming neither
+    the secret nor the project."""
+    from google.auth.exceptions import TransportError
+
+    with_session(StatusSession(raises=TransportError("network unreachable")))
+    with pytest.raises(RuntimeError) as err:
+        _gsm.secret_get_gsm("studyflix-postgresql-connection", "latest")
+    assert "studyflix-postgresql-connection" in str(err.value)
+    assert "test-project" in str(err.value)
+    assert "token endpoint" in str(err.value)
+
+
+def test_a_malformed_200_body_is_reported_without_leaking_the_response(with_session):
+    """Finding 2: response.json() raises RequestsJSONDecodeError (a ValueError
+    subclass) on a malformed body, not ConnectionError or Timeout, so it would
+    otherwise escape secret_get_gsm unprefixed and unnamed. Its .doc attribute
+    holds the ENTIRE response body -- on a 200 that is malformed mid-flight,
+    that body contains payload.data, the base64 of the credential. `from None`
+    must drop the original exception so it is not reachable as __cause__."""
+    class NotJSONResponse:
+        status_code = 200
+
+        def json(self):
+            raise requests.exceptions.JSONDecodeError("Expecting value", "not json", 0)
+
+    with_session(StatusSession(NotJSONResponse()))
+    with pytest.raises(RuntimeError) as err:
+        _gsm.secret_get_gsm("studyflix-postgresql-connection", "latest")
+    assert "studyflix-postgresql-connection" in str(err.value)
+    assert "not JSON" in str(err.value)
+    assert err.value.__cause__ is None
+
+
 def test_the_retry_policy_covers_transient_statuses_and_not_403():
     """Asserts the CONFIGURATION. See the plan's self-review: the fake session
     bypasses the adapter the policy is mounted on, so this pins the values, not

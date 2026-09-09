@@ -13,7 +13,6 @@ import base64
 import binascii
 import json
 import os
-import requests
 from urllib.parse import quote
 
 DEFAULT_PROJECT = "studyflix-secrets"
@@ -62,11 +61,16 @@ def _project_from_key():
 def gsm_project():
     """Which project holds the secrets.
 
-    SF_GSM_PROJECT is honoured ONLY outside production. The threat is an actor
-    who can set environment variables for a job: leaving the project pointer
-    configurable would let them satisfy the backend guard with
-    SF_SECRET_BACKEND=gsm and then repoint the whole package at a project they
-    control. The pointer must not be as writable as the switch.
+    SF_GSM_PROJECT is honoured ONLY outside production; in production it is
+    neutralised in favour of _project_from_key(). That is defence against
+    MISCONFIGURATION, not against an actor with control of the job's
+    environment: _project_from_key() reads the file named by
+    GOOGLE_APPLICATION_CREDENTIALS, an environment variable of exactly the
+    same writability as SF_SECRET_BACKEND. Someone who can set one can set the
+    other. On this host such an actor can also edit the command itself, so
+    they are not meaningfully constrained by this function either way --
+    pinning the compiled-in DEFAULT_PROJECT in production would close that,
+    and is deferred as cleanup rather than treated as a fix here.
     """
     from . import is_production
 
@@ -163,8 +167,12 @@ def _session_reset():
 def secret_get_gsm(name, version="latest"):
     # Deferred, matching _session()'s own lazy google.auth imports: the module
     # must stay importable on the file path, where google-auth may not even be
-    # what's on the host's Python path.
-    from google.auth.exceptions import RefreshError
+    # what's on the host's Python path. requests is deferred for the same
+    # reason -- it is used here ONLY for these two exception classes, and the
+    # file backend must not drag in requests/urllib3 as a hard import-time
+    # dependency.
+    import requests
+    from google.auth.exceptions import RefreshError, TransportError
 
     project = gsm_project()
     url = ("https://secretmanager.googleapis.com/v1/projects/%s/secrets/%s"
@@ -193,6 +201,22 @@ def secret_get_gsm(name, version="latest"):
             "in project %r. Common causes: the key was revoked or deleted, the "
             "service account is disabled, or this host's clock has drifted."
             % (name, project)) from exc
+    except TransportError as exc:
+        # Also raised from credentials.before_request() during the pre-request
+        # token refresh, BEFORE any HTTP call to Secret Manager -- but unlike
+        # RefreshError this is NOT Google rejecting the credentials. It is
+        # google-auth's own requests.Session (internal to the token refresh,
+        # separate from _session()'s AuthorizedSession) wrapping a
+        # requests.exceptions.RequestException it hit while reaching
+        # oauth2.googleapis.com. TransportError subclasses GoogleAuthError, not
+        # requests.exceptions.*, so it is caught neither by the ConnectionError
+        # nor the Timeout handler above and would otherwise propagate raw,
+        # naming neither the secret nor the project. The fix is a network
+        # problem reaching the TOKEN endpoint, not Secret Manager itself.
+        raise RuntimeError(
+            "GSM: could not reach the token endpoint (oauth2.googleapis.com) "
+            "while refreshing credentials for %r in project %r (%s). Check "
+            "network and DNS from this host." % (name, project, exc)) from exc
 
     status = response.status_code
     if status == 401:
@@ -223,7 +247,20 @@ def secret_get_gsm(name, version="latest"):
 
 
 def _payload_of(response, name, version):
-    body = response.json()
+    try:
+        body = response.json()
+    except ValueError:
+        # requests raises RequestsJSONDecodeError here, which subclasses
+        # ValueError (not ConnectionError or Timeout, so it would otherwise
+        # escape secret_get_gsm's handler ladder unprefixed and unnamed). Its
+        # .doc attribute holds the ENTIRE response body -- on a 200 that is
+        # malformed mid-flight, that body contains payload.data, the base64 of
+        # the credential. `from None` is required, not stylistic: chaining
+        # would keep that exception reachable as __cause__, and a structured
+        # logger serialising __cause__.doc (or vars(__cause__)) would write the
+        # credential to a log even though str(e) and e.args stay clean.
+        raise RuntimeError(
+            "GSM: response for %r version %s was not JSON" % (name, version)) from None
     payload = (body or {}).get("payload")
     data = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(data, str):

@@ -103,6 +103,34 @@ def test_a_two_file_secret_whose_first_part_is_not_json_refuses_clearly(tmp_path
         sfsecrets.secret_get("test-non-json-secret", key_dir=str(tmp_path))
 
 
+def test_a_non_json_first_part_does_not_leak_the_decrypted_plaintext_via_cause(tmp_path, monkeypatch):
+    """Finding 3: json.JSONDecodeError sets .doc to the string it failed to
+    parse -- here the DECRYPTED contents of the first legacy file. `from exc`
+    would keep that exception reachable as __cause__, so a structured logger
+    serialising __cause__.doc (or vars(__cause__)) would write the decrypted
+    plaintext to a log even though str(e) stays clean. `from None` must drop
+    it. (The password itself is parts[1] and is never in .doc -- this is
+    connection metadata, not the credential -- but it must not leak either.)"""
+    master = "m5"
+    cipher = Fernet(base64.urlsafe_b64encode(hashlib.sha256(master.encode()).digest()))
+    d = tmp_path / "Not_Json_Cause"
+    d.mkdir(parents=True)
+    plaintext_secret_marker = "definitely-not-json-but-secret-looking-h0st"
+    (d / "a.txt").write_bytes(cipher.encrypt(plaintext_secret_marker.encode()))
+    (d / "b.txt").write_bytes(cipher.encrypt(b"password"))
+
+    monkeypatch.setenv("DB_MASTER_KEY", master)
+    monkeypatch.delenv("SF_SECRET_BACKEND", raising=False)
+    monkeypatch.setitem(backends.FILES, "test-non-json-cause-secret", (
+        ("Not_Json_Cause/a.txt", "Not_Json_Cause/b.txt"),
+        "derived", "DB_MASTER_KEY"))
+
+    with pytest.raises(RuntimeError) as err:
+        sfsecrets.secret_get("test-non-json-cause-secret", key_dir=str(tmp_path))
+    assert err.value.__cause__ is None
+    assert plaintext_secret_marker not in str(err.value)
+
+
 def test_the_file_backend_refuses_a_pinned_version(tmp_path):
     """secret_get accepts a version; the file backend cannot honour one. Before
     this it ignored the argument and returned whatever the file held -- the
