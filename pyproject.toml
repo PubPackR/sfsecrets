@@ -10,6 +10,20 @@ dependencies = [
     # production consumes this package as a git submodule with no install step --
     # the host's hand-installed packages are what actually get imported.
     "cryptography==46.0.4",
+    # Both arrive on the host transitively via googleads, which base-65 uses for
+    # the Ad Manager API. Declared here so CI tests against the versions
+    # production actually imports; NOT installed by any deploy step.
+    #
+    # MEASURED on shiny.studyflix.info 2026-09-09, not read from a lockfile:
+    # base-65's uv.lock says google-auth 2.55.1 and the host has 2.57.1. The
+    # host is what gets imported.
+    "google-auth==2.57.1",
+    "requests==2.34.2",
+    # Imported DIRECTLY by _gsm.py for Retry, not merely pulled in by requests.
+    # allowed_methods= is urllib3 2.x; 1.x called it method_whitelist, so an
+    # older host would raise TypeError while CI stayed green on whatever uv
+    # resolved. Host measured at 2.7.0.
+    "urllib3==2.7.0",
 ]
 
 [dependency-groups]
