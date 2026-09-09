@@ -108,6 +108,20 @@ def _no_credentials_message():
     if not isinstance(parsed, dict) or "type" not in parsed:
         return ("GOOGLE_APPLICATION_CREDENTIALS %r is readable but is not valid "
                 "service-account key JSON." % gac)
+    if parsed.get("type") == "service_account":
+        # google.auth.default() wraps the ValueError that
+        # from_service_account_info() raises for a missing/garbled required
+        # field into the same generic DefaultCredentialsError as every other
+        # cause here -- so a key that is valid JSON with the right "type" but a
+        # missing client_email/token_uri or a garbled private_key would
+        # otherwise fall through to the "rejected by Google" branch below,
+        # which is wrong: Google never saw this key, it never left the host.
+        missing = [field for field in ("client_email", "token_uri", "private_key")
+                   if not parsed.get(field)]
+        if missing:
+            return ("the service-account key at %r is missing required field(s): "
+                    "%s. This is a locally malformed key -- it was never sent to "
+                    "Google." % (gac, ", ".join(missing)))
     return ("the service-account key at %r was rejected by Google.\n"
             "Common causes: the key was revoked or deleted, the service account "
             "is disabled, or this host's clock has drifted -- service-account "
@@ -147,6 +161,11 @@ def _session_reset():
 
 
 def secret_get_gsm(name, version="latest"):
+    # Deferred, matching _session()'s own lazy google.auth imports: the module
+    # must stay importable on the file path, where google-auth may not even be
+    # what's on the host's Python path.
+    from google.auth.exceptions import RefreshError
+
     project = gsm_project()
     url = ("https://secretmanager.googleapis.com/v1/projects/%s/secrets/%s"
            "/versions/%s:access"
@@ -161,6 +180,19 @@ def secret_get_gsm(name, version="latest"):
         raise RuntimeError(
             "GSM: request for %r timed out after retries. Check network and DNS "
             "from this host." % name) from exc
+    except RefreshError as exc:
+        # Raised by credentials.before_request() inside AuthorizedSession.request,
+        # BEFORE any HTTP call -- so it is neither a ConnectionError nor a
+        # Timeout and would otherwise propagate raw, naming neither the secret
+        # nor the project. A real Google-side rejection of the credentials
+        # themselves: a revoked/deleted key, a disabled service account, or
+        # host clock drift (service-account auth is JWT-signed and
+        # clock-sensitive).
+        raise RuntimeError(
+            "GSM: authentication was refreshed but rejected by Google for %r "
+            "in project %r. Common causes: the key was revoked or deleted, the "
+            "service account is disabled, or this host's clock has drifted."
+            % (name, project)) from exc
 
     status = response.status_code
     if status == 401:
@@ -192,7 +224,8 @@ def secret_get_gsm(name, version="latest"):
 
 def _payload_of(response, name, version):
     body = response.json()
-    data = (body or {}).get("payload", {}).get("data")
+    payload = (body or {}).get("payload")
+    data = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(data, str):
         raise RuntimeError(
             "GSM: unexpected response shape for %r version %s (no payload.data)"
@@ -222,5 +255,10 @@ def _payload_of(response, name, version):
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError as exc:
+        # from None, not from exc: str(exc) is clean, but exc.args and repr(exc)
+        # embed the decoded bytes verbatim (e.g. args = ('utf-8', b'...secret...',
+        # 19, 20, 'invalid start byte')). `from exc` would keep that object
+        # reachable as __cause__, so a structured logger serialising args, or a
+        # handler logging %r of __cause__, would write the credential to a log.
         raise RuntimeError(
-            "GSM: secret %r version %s is not valid UTF-8" % (name, version)) from exc
+            "GSM: secret %r version %s is not valid UTF-8" % (name, version)) from None

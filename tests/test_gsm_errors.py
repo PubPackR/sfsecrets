@@ -89,6 +89,22 @@ def test_a_connection_failure_says_check_network_and_dns(with_session):
         _gsm.secret_get_gsm("studyflix-postgresql-connection", "latest")
 
 
+def test_a_refresh_error_names_the_secret_and_the_project(with_session):
+    """I2a: RefreshError is raised from credentials.before_request() inside
+    AuthorizedSession.request, BEFORE any HTTP call is made -- so it is neither
+    a ConnectionError nor a Timeout and would otherwise propagate raw, naming
+    neither the secret nor the project. Covers a revoked/deleted key, a
+    disabled service account, or host clock drift."""
+    from google.auth.exceptions import RefreshError
+
+    with_session(StatusSession(raises=RefreshError("invalid_grant")))
+    with pytest.raises(RuntimeError) as err:
+        _gsm.secret_get_gsm("studyflix-postgresql-connection", "latest")
+    assert "studyflix-postgresql-connection" in str(err.value)
+    assert "test-project" in str(err.value)
+    assert "revoked" in str(err.value)
+
+
 def test_the_retry_policy_covers_transient_statuses_and_not_403():
     """Asserts the CONFIGURATION. See the plan's self-review: the fake session
     bypasses the adapter the policy is mounted on, so this pins the values, not
