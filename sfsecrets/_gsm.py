@@ -20,6 +20,8 @@ SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 TIMEOUT_SECONDS = 10
 RETRY_STATUSES = (408, 429, 500, 502, 503, 504)
 _SESSION = None
+_UNSET = object()  # marks "no value produced" without attaching implicit
+                    # exception context -- see _payload_of.
 
 
 def _retry_policy():
@@ -247,6 +249,7 @@ def secret_get_gsm(name, version="latest"):
 
 
 def _payload_of(response, name, version):
+    body = _UNSET
     try:
         body = response.json()
     except ValueError:
@@ -255,12 +258,24 @@ def _payload_of(response, name, version):
         # escape secret_get_gsm's handler ladder unprefixed and unnamed). Its
         # .doc attribute holds the ENTIRE response body -- on a 200 that is
         # malformed mid-flight, that body contains payload.data, the base64 of
-        # the credential. `from None` is required, not stylistic: chaining
-        # would keep that exception reachable as __cause__, and a structured
-        # logger serialising __cause__.doc (or vars(__cause__)) would write the
-        # credential to a log even though str(e) and e.args stay clean.
+        # the credential.
+        #
+        # `from None` alone is NOT enough: it clears __cause__ and sets
+        # __suppress_context__ so Python's own traceback printer stays quiet,
+        # but it does not clear __context__ -- Python attaches that the moment
+        # a `raise` executes lexically inside an active except block,
+        # regardless of any `from` clause. Anything that walks __context__
+        # directly instead of going through the traceback formatter --
+        # Sentry-style exception capture, structured JSON logging -- still
+        # reaches .doc and the credential inside it. Verified directly against
+        # this exact shape (see tests/test_gsm_errors.py).
+        #
+        # The only complete fix is to raise OUTSIDE the except block, below,
+        # where there is no active exception for Python to attach at all.
+        pass
+    if body is _UNSET:
         raise RuntimeError(
-            "GSM: response for %r version %s was not JSON" % (name, version)) from None
+            "GSM: response for %r version %s was not JSON" % (name, version))
     payload = (body or {}).get("payload")
     data = payload.get("data") if isinstance(payload, dict) else None
     if not isinstance(data, str):
@@ -289,13 +304,21 @@ def _payload_of(response, name, version):
         raise RuntimeError(
             "GSM: secret %r version %s contains NUL bytes; binary payloads are "
             "out of scope" % (name, version))
+    decoded = _UNSET
     try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        # from None, not from exc: str(exc) is clean, but exc.args and repr(exc)
-        # embed the decoded bytes verbatim (e.g. args = ('utf-8', b'...secret...',
-        # 19, 20, 'invalid start byte')). `from exc` would keep that object
-        # reachable as __cause__, so a structured logger serialising args, or a
-        # handler logging %r of __cause__, would write the credential to a log.
+        decoded = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        # str(exc) is clean, but exc.args and repr(exc) embed the decoded
+        # bytes verbatim (e.g. args = ('utf-8', b'...secret...', 19, 20,
+        # 'invalid start byte')). `from None` clears __cause__ and
+        # __suppress_context__ but NOT __context__ -- Python attaches that to
+        # any `raise` executed lexically inside this except block regardless
+        # of the `from` clause, and anything walking __context__ directly
+        # (Sentry-style capture, structured JSON logging) would still reach
+        # args and repr(). So the raise happens OUTSIDE this except block,
+        # below, where no exception is active for Python to attach.
+        pass
+    if decoded is _UNSET:
         raise RuntimeError(
-            "GSM: secret %r version %s is not valid UTF-8" % (name, version)) from None
+            "GSM: secret %r version %s is not valid UTF-8" % (name, version))
+    return decoded

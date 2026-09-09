@@ -129,13 +129,28 @@ def test_a_malformed_200_body_is_reported_without_leaking_the_response(with_sess
     subclass) on a malformed body, not ConnectionError or Timeout, so it would
     otherwise escape secret_get_gsm unprefixed and unnamed. Its .doc attribute
     holds the ENTIRE response body -- on a 200 that is malformed mid-flight,
-    that body contains payload.data, the base64 of the credential. `from None`
-    must drop the original exception so it is not reachable as __cause__."""
+    that body contains payload.data, the base64 of the credential -- the worst
+    of the three leaks this package found, since .doc here is the credential
+    itself, not metadata around it.
+
+    `from None` alone is NOT enough: it drops __cause__ and sets
+    __suppress_context__, but leaves __context__ pointing at the original
+    JSONDecodeError, still reachable by anything that walks __context__
+    directly instead of going through the traceback formatter (Sentry-style
+    capture, structured JSON logging). The complete fix raises OUTSIDE the
+    except block, which is what makes __context__ None too -- the doc below
+    contains a base64-shaped marker standing in for the credential, and it
+    must not be reachable through the raised exception at all."""
+    secret_marker = "c3VwZXJzZWNyZXRjcmVkZW50aWFsCg=="  # base64("supersecretcredential")
+
     class NotJSONResponse:
         status_code = 200
 
         def json(self):
-            raise requests.exceptions.JSONDecodeError("Expecting value", "not json", 0)
+            raise requests.exceptions.JSONDecodeError(
+                "Expecting value",
+                '{"payload": {"data": "%s"' % secret_marker,  # truncated mid-flight
+                0)
 
     with_session(StatusSession(NotJSONResponse()))
     with pytest.raises(RuntimeError) as err:
@@ -143,6 +158,8 @@ def test_a_malformed_200_body_is_reported_without_leaking_the_response(with_sess
     assert "studyflix-postgresql-connection" in str(err.value)
     assert "not JSON" in str(err.value)
     assert err.value.__cause__ is None
+    assert err.value.__context__ is None
+    assert secret_marker not in str(err.value)
 
 
 def test_the_retry_policy_covers_transient_statuses_and_not_403():

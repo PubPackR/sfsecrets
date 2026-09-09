@@ -108,9 +108,16 @@ def test_a_non_json_first_part_does_not_leak_the_decrypted_plaintext_via_cause(t
     parse -- here the DECRYPTED contents of the first legacy file. `from exc`
     would keep that exception reachable as __cause__, so a structured logger
     serialising __cause__.doc (or vars(__cause__)) would write the decrypted
-    plaintext to a log even though str(e) stays clean. `from None` must drop
-    it. (The password itself is parts[1] and is never in .doc -- this is
-    connection metadata, not the credential -- but it must not leak either.)"""
+    plaintext to a log even though str(e) stays clean. (The password itself is
+    parts[1] and is never in .doc -- this is connection metadata, not the
+    credential -- but it must not leak either.)
+
+    `from None` alone is NOT enough: it clears __cause__ and sets
+    __suppress_context__, but __context__ still points at the original
+    JSONDecodeError -- reachable by anything that walks __context__ directly
+    instead of going through the traceback formatter (Sentry-style capture,
+    structured JSON logging). The fix moves the raise outside the except
+    block entirely, so __context__ is None too -- assert all three."""
     master = "m5"
     cipher = Fernet(base64.urlsafe_b64encode(hashlib.sha256(master.encode()).digest()))
     d = tmp_path / "Not_Json_Cause"
@@ -128,6 +135,7 @@ def test_a_non_json_first_part_does_not_leak_the_decrypted_plaintext_via_cause(t
     with pytest.raises(RuntimeError) as err:
         sfsecrets.secret_get("test-non-json-cause-secret", key_dir=str(tmp_path))
     assert err.value.__cause__ is None
+    assert err.value.__context__ is None
     assert plaintext_secret_marker not in str(err.value)
 
 

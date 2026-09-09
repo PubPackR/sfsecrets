@@ -103,14 +103,25 @@ def test_a_non_utf8_payload_does_not_chain_the_original_exception(fake):
     """I1: UnicodeDecodeError.args and repr() embed the decoded bytes verbatim
     (unlike str(exc)), so `raise ... from exc` would keep the secret reachable
     on __cause__ for any logger that serialises exception.args or logs %r of
-    __cause__. The fix is `from None`; a revert to `from exc` must fail this."""
+    __cause__. The fix is `from None` -- but `from None` alone only clears
+    __cause__ and sets __suppress_context__; it does NOT clear __context__,
+    which Python attaches to any `raise` executed lexically inside an active
+    except block regardless of the `from` clause. Something that walks
+    __context__ directly (Sentry-style capture, structured JSON logging)
+    would still reach the UnicodeDecodeError and its secret-bearing args. The
+    complete fix raises OUTSIDE the except block, which is what makes
+    __context__ None too. A revert to raising inside the handler -- with or
+    without `from None` -- must fail the __context__ assertion below."""
     payload = b"SUPERSECRETPASSWORD\xff"
     body = {"payload": {"data": base64.b64encode(payload).decode()}}
     fake(FakeResponse(200, body=body))
     with pytest.raises(RuntimeError) as err:
         _gsm.secret_get_gsm("studyflix-postgresql-connection", "latest")
     assert err.value.__cause__ is None
-    assert err.value.__suppress_context__ is True
+    assert err.value.__context__ is None
+    # No exception was active where this raise executes (it is outside the
+    # except block), so there is nothing to suppress either.
+    assert err.value.__suppress_context__ is False
 
 
 def test_the_name_is_url_encoded(fake):

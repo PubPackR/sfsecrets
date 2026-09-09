@@ -9,6 +9,8 @@ from cryptography.fernet import Fernet, InvalidToken
 from ._legacy_map import FILES
 
 DEFAULT_KEY_DIR = "../../keys"
+_UNSET = object()  # marks "no value produced" without attaching implicit
+                    # exception context -- see _join_legacy_parts.
 
 
 def _fernet_for(derivation, env_var):
@@ -90,6 +92,8 @@ def _join_legacy_parts(name, parts):
             "%s: the file backend only knows how to join exactly 2 legacy "
             "files (a JSON object plus a password) into one secret, got %d. "
             "Add a join rule for this shape to _join_legacy_parts." % (name, len(parts)))
+    merged = _UNSET
+    parse_error = None
     try:
         merged = json.loads(parts[0])
     except json.JSONDecodeError as exc:
@@ -99,15 +103,23 @@ def _join_legacy_parts(name, parts):
         # is parts[1] and is never in .doc, so this is connection metadata, not
         # the credential itself -- still not something to keep reachable.
         # str(exc) is clean (verified: the "Expecting value: line 1 column 1"
-        # form), so it is safe to keep in the message; `from None` drops the
-        # exception object itself so .doc/vars() cannot be reached via
-        # __cause__ by a logger that serialises it. Same pattern as _gsm.py's
-        # UnicodeDecodeError handling; left uncovered there because that leak
-        # sweep was scoped to _gsm.py only.
+        # form), so it is safe to keep in the message -- captured here, before
+        # the except block ends, because the raise itself happens below.
+        #
+        # `from None` alone is NOT enough: it clears __cause__ and sets
+        # __suppress_context__, but not __context__ -- Python attaches that to
+        # any `raise` executed lexically inside this except block regardless
+        # of the `from` clause, so a logger walking __context__ directly
+        # (Sentry-style capture, structured JSON logging) would still reach
+        # .doc. Same shape as _gsm.py's UnicodeDecodeError and response.json()
+        # handling; the fix here is the same: raise OUTSIDE the except block,
+        # below, where no exception is active for Python to attach.
+        parse_error = str(exc)
+    if merged is _UNSET:
         raise RuntimeError(
             "%s: the file backend expected the first of its 2 legacy files to "
             "be a JSON object to merge the second file's password into, but "
-            "it did not parse as JSON (%s)." % (name, exc)) from None
+            "it did not parse as JSON (%s)." % (name, parse_error))
     if not isinstance(merged, dict):
         raise RuntimeError(
             "%s: the file backend expected the first of its 2 legacy files to "
