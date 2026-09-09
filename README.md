@@ -16,11 +16,12 @@ packages like `pgaccessPy`.
 
 ## Status
 
-This is the first commit. Only the **file backend** is implemented -- it reads
-the encrypted legacy keyfiles under `keys/` that `secretsR` also reads, so both
-languages resolve the same secrets from the same files during the migration.
-The **gsm** backend (Google Secret Manager, the migration's actual target)
-raises `NotImplementedError` for now and arrives in a later step.
+Two backends are implemented. The **file backend** reads the encrypted legacy
+keyfiles under `keys/` that `secretsR` also reads, so both languages resolve
+the same secrets from the same files during the migration. The **gsm** backend
+(Google Secret Manager, the migration's actual target) reads secrets from
+Secret Manager over its REST API, authenticating via Application Default
+Credentials.
 
 ## Backends
 
@@ -30,7 +31,7 @@ Selected via the `SF_SECRET_BACKEND` environment variable (default `file`):
 |---|---|---|
 | `file` | `SF_SECRET_BACKEND=file` (default) | Decrypts the legacy keyfiles under `keys/` with Fernet. |
 | `env` | `SF_SECRET_BACKEND=env` | Reads `SF_SECRET_<NAME>` (name upper-cased, `-` to `_`). For local dev / CI. |
-| `gsm` | `SF_SECRET_BACKEND=gsm` | Not implemented yet. |
+| `gsm` | `SF_SECRET_BACKEND=gsm` | Reads the secret from Google Secret Manager over REST, authenticating via Application Default Credentials. |
 
 On a host `sfsecrets.is_production()` considers production (the marker file
 `/etc/studyflix/production` exists, or `GOOGLE_APPLICATION_CREDENTIALS` names a
@@ -83,8 +84,11 @@ files, so whatever is hand-installed on the host is what actually gets
 imported. `pyproject.toml` exists so the package is legible and testable on
 its own, not because anything installs it from here.
 
-`cryptography` is the only third-party dependency, already installed on the
-host at `cryptography==46.0.4`. No other dependency should be added.
+The third-party dependencies -- `cryptography`, `google-auth`, `requests` and
+`urllib3` -- are pinned in `pyproject.toml` to the versions measured installed
+on `shiny.studyflix.info`. The rule is not "add nothing": it is add nothing the
+host does not already have, since the deploy only rsyncs files and runs no
+install step.
 
 ### Local development
 

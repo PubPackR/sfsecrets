@@ -1,0 +1,174 @@
+import base64
+import pytest
+import requests
+from sfsecrets import _gsm
+
+
+class FakeResponse:
+    def __init__(self, status_code, payload=None):
+        self.status_code = status_code
+        data = base64.b64encode(payload.encode()).decode() if payload is not None else None
+        self._body = {"payload": {"data": data}} if data is not None else {}
+
+    def json(self):
+        return self._body
+
+
+class StatusSession:
+    def __init__(self, response=None, raises=None):
+        self.response = response
+        self.raises = raises
+
+    def get(self, url, timeout=None):
+        if self.raises is not None:
+            raise self.raises
+        return self.response
+
+
+@pytest.fixture
+def with_session(monkeypatch):
+    def _install(session):
+        monkeypatch.setattr(_gsm, "_session", lambda: session)
+
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    monkeypatch.setenv("SF_GSM_PROJECT", "test-project")
+    return _install
+
+
+def test_403_names_the_role_and_the_project(with_session):
+    with_session(StatusSession(FakeResponse(403)))
+    with pytest.raises(RuntimeError) as err:
+        _gsm.secret_get_gsm("studyflix-postgresql-connection", "latest")
+    assert "roles/secretmanager.secretAccessor" in str(err.value)
+    assert "test-project" in str(err.value)
+
+
+def test_404_names_the_secret_and_the_version(with_session):
+    with_session(StatusSession(FakeResponse(404)))
+    with pytest.raises(RuntimeError) as err:
+        _gsm.secret_get_gsm("studyflix-postgresql-connection", "7")
+    assert "studyflix-postgresql-connection" in str(err.value)
+    assert "7" in str(err.value)
+
+
+def test_401_says_authentication_was_rejected(with_session):
+    with_session(StatusSession(FakeResponse(401)))
+    with pytest.raises(RuntimeError, match="authentication"):
+        _gsm.secret_get_gsm("studyflix-postgresql-connection", "latest")
+
+
+def test_401_discards_the_cached_session(with_session, monkeypatch):
+    """The 401 handler must drop the module-level session cache so the next
+    call re-authenticates, rather than reusing the same rejected session."""
+    monkeypatch.setattr(_gsm, "_SESSION", object())
+    with_session(StatusSession(FakeResponse(401)))
+    with pytest.raises(RuntimeError):
+        _gsm.secret_get_gsm("studyflix-postgresql-connection", "latest")
+    assert _gsm._SESSION is None
+
+
+def test_400_explains_the_disabled_latest_version_trap(with_session):
+    """'latest' resolves to the highest version number regardless of state, so a
+    disabled newest version fails rather than falling back to the one below."""
+    with_session(StatusSession(FakeResponse(400)))
+    with pytest.raises(RuntimeError, match="pin an explicit version"):
+        _gsm.secret_get_gsm("studyflix-postgresql-connection", "latest")
+
+
+def test_an_exhausted_5xx_names_the_secret_not_just_the_status(with_session):
+    with_session(StatusSession(FakeResponse(500)))
+    with pytest.raises(RuntimeError) as err:
+        _gsm.secret_get_gsm("studyflix-postgresql-connection", "latest")
+    assert "studyflix-postgresql-connection" in str(err.value)
+    assert "500" in str(err.value)
+
+
+def test_a_connection_failure_says_check_network_and_dns(with_session):
+    with_session(StatusSession(raises=requests.exceptions.ConnectionError("boom")))
+    with pytest.raises(RuntimeError, match="network and DNS"):
+        _gsm.secret_get_gsm("studyflix-postgresql-connection", "latest")
+
+
+def test_a_refresh_error_names_the_secret_and_the_project(with_session):
+    """I2a: RefreshError is raised from credentials.before_request() inside
+    AuthorizedSession.request, BEFORE any HTTP call is made -- so it is neither
+    a ConnectionError nor a Timeout and would otherwise propagate raw, naming
+    neither the secret nor the project. Covers a revoked/deleted key, a
+    disabled service account, or host clock drift."""
+    from google.auth.exceptions import RefreshError
+
+    with_session(StatusSession(raises=RefreshError("invalid_grant")))
+    with pytest.raises(RuntimeError) as err:
+        _gsm.secret_get_gsm("studyflix-postgresql-connection", "latest")
+    assert "studyflix-postgresql-connection" in str(err.value)
+    assert "test-project" in str(err.value)
+    assert "revoked" in str(err.value)
+
+
+def test_a_transport_error_names_the_secret_and_the_project(with_session):
+    """I2b/Finding 1: TransportError is ALSO raised from
+    credentials.before_request() inside AuthorizedSession.request, BEFORE any
+    HTTP call -- but unlike RefreshError it is not Google rejecting the
+    credentials, it is google-auth's own requests.Session failing to reach
+    oauth2.googleapis.com. TransportError subclasses GoogleAuthError, not
+    requests.exceptions.*, so neither the ConnectionError nor the Timeout
+    handler catches it, and it would otherwise propagate raw, naming neither
+    the secret nor the project."""
+    from google.auth.exceptions import TransportError
+
+    with_session(StatusSession(raises=TransportError("network unreachable")))
+    with pytest.raises(RuntimeError) as err:
+        _gsm.secret_get_gsm("studyflix-postgresql-connection", "latest")
+    assert "studyflix-postgresql-connection" in str(err.value)
+    assert "test-project" in str(err.value)
+    assert "token endpoint" in str(err.value)
+
+
+def test_a_malformed_200_body_is_reported_without_leaking_the_response(with_session):
+    """Finding 2: response.json() raises RequestsJSONDecodeError (a ValueError
+    subclass) on a malformed body, not ConnectionError or Timeout, so it would
+    otherwise escape secret_get_gsm unprefixed and unnamed. Its .doc attribute
+    holds the ENTIRE response body -- on a 200 that is malformed mid-flight,
+    that body contains payload.data, the base64 of the credential -- the worst
+    of the three leaks this package found, since .doc here is the credential
+    itself, not metadata around it.
+
+    `from None` alone is NOT enough: it drops __cause__ and sets
+    __suppress_context__, but leaves __context__ pointing at the original
+    JSONDecodeError, still reachable by anything that walks __context__
+    directly instead of going through the traceback formatter (Sentry-style
+    capture, structured JSON logging). The complete fix raises OUTSIDE the
+    except block, which is what makes __context__ None too -- the doc below
+    contains a base64-shaped marker standing in for the credential, and it
+    must not be reachable through the raised exception at all."""
+    secret_marker = "c3VwZXJzZWNyZXRjcmVkZW50aWFsCg=="  # base64("supersecretcredential")
+
+    class NotJSONResponse:
+        status_code = 200
+
+        def json(self):
+            raise requests.exceptions.JSONDecodeError(
+                "Expecting value",
+                '{"payload": {"data": "%s"' % secret_marker,  # truncated mid-flight
+                0)
+
+    with_session(StatusSession(NotJSONResponse()))
+    with pytest.raises(RuntimeError) as err:
+        _gsm.secret_get_gsm("studyflix-postgresql-connection", "latest")
+    assert "studyflix-postgresql-connection" in str(err.value)
+    assert "not JSON" in str(err.value)
+    assert err.value.__cause__ is None
+    assert err.value.__context__ is None
+    assert secret_marker not in str(err.value)
+
+
+def test_the_retry_policy_covers_transient_statuses_and_not_403():
+    """Asserts the CONFIGURATION. See the plan's self-review: the fake session
+    bypasses the adapter the policy is mounted on, so this pins the values, not
+    the effect."""
+    retry = _gsm._retry_policy()
+    assert retry.total == 3
+    assert set(retry.status_forcelist) == {408, 429, 500, 502, 503, 504}
+    assert 403 not in retry.status_forcelist
+    assert list(retry.allowed_methods) == ["GET"]
+    assert retry.raise_on_status is False

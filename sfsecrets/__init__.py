@@ -8,7 +8,8 @@ dependency-installation step and the deploy only rsyncs files.
 """
 import os
 
-from ._backends import secret_get_env, secret_get_file, secret_get_gsm
+from ._backends import secret_get_env, secret_get_file
+from ._gsm import secret_get_gsm
 from ._legacy_map import FILES, SERVICES
 
 __all__ = ["secret_get", "secret_cache_clear", "backend", "is_production",
@@ -51,7 +52,7 @@ def secret_get(name, version="latest", key_dir=None):
             "Set SF_SECRET_BACKEND=gsm." % chosen)
 
     if chosen == "file":
-        value = secret_get_file(name, key_dir)
+        value = secret_get_file(name, key_dir, version)
     elif chosen == "env":
         value = secret_get_env(name)
     elif chosen == "gsm":
