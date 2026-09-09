@@ -57,6 +57,16 @@ def test_401_says_authentication_was_rejected(with_session):
         _gsm.secret_get_gsm("studyflix-postgresql-connection", "latest")
 
 
+def test_401_discards_the_cached_session(with_session, monkeypatch):
+    """The 401 handler must drop the module-level session cache so the next
+    call re-authenticates, rather than reusing the same rejected session."""
+    monkeypatch.setattr(_gsm, "_SESSION", object())
+    with_session(StatusSession(FakeResponse(401)))
+    with pytest.raises(RuntimeError):
+        _gsm.secret_get_gsm("studyflix-postgresql-connection", "latest")
+    assert _gsm._SESSION is None
+
+
 def test_400_explains_the_disabled_latest_version_trap(with_session):
     """'latest' resolves to the highest version number regardless of state, so a
     disabled newest version fails rather than falling back to the one below."""

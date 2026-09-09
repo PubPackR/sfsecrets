@@ -24,7 +24,8 @@ _SESSION = None
 
 
 def _retry_policy():
-    """Three tries over transient statuses and connection failures.
+    """Retries transient statuses and connection failures, on top of the
+    initial request.
 
     Safe ONLY because versions/{v}:access is an idempotent GET. Do not copy this
     policy to a mutating call.
@@ -33,8 +34,9 @@ def _retry_policy():
     mapped to a message naming the secret; urllib3's own RetryError names neither
     the secret nor the status, which is useless in a job resolving several. The
     worst case is bounded by arithmetic rather than a total-time setting, which
-    urllib3 does not offer: three attempts at a 10s timeout plus backoff sleeps
-    of 0s, 2s and 4s stays under 40 seconds.
+    urllib3 does not offer: total=3 permits 3 retries IN ADDITION TO the initial
+    request, so 4 attempts at a 10s timeout plus backoff sleeps of 0s, 2s and 4s
+    is roughly 46 seconds.
     """
     from urllib3.util.retry import Retry
 
