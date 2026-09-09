@@ -16,9 +16,18 @@ def test_outside_production_an_empty_env_var_falls_back(monkeypatch):
 
 
 def test_in_production_the_env_var_is_IGNORED(monkeypatch, tmp_path):
-    """The security rule. An actor who can set a job's environment could
-    otherwise set SF_SECRET_BACKEND=gsm to satisfy the backend guard and then
-    repoint the package at a project they control."""
+    """SF_GSM_PROJECT must not be consulted in production.
+
+    What this buys is defence against MISCONFIGURATION -- a stray SF_GSM_PROJECT
+    in a profile or an inherited environment. NOT defence against an actor with
+    control of the job environment: in production the project comes from the file
+    named by GOOGLE_APPLICATION_CREDENTIALS, which is equally writable, and on
+    the FlowForce host a job's environment IS its command string, so that actor
+    already runs arbitrary code.
+
+    An earlier version of this docstring called it "the security rule" and
+    claimed the stronger property. The test is unchanged and still pins real
+    behaviour; only the label was wrong. See gsm_project() in _gsm.py."""
     key = tmp_path / "sa.json"
     key.write_text(json.dumps({"type": "service_account", "project_id": "real-project"}))
     monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(key))
