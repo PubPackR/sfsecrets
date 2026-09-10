@@ -155,3 +155,61 @@ def test_the_file_backend_still_accepts_latest(monkeypatch, tmp_path):
     with pytest.raises(FileNotFoundError):
         backends.secret_get_file("studyflix-admanager-service-account",
                                  key_dir=str(tmp_path), version="latest")
+
+
+def test_an_explicit_key_is_used_instead_of_the_environment(monkeypatch, tmp_path):
+    """The caller may hold the key without the environment holding it.
+
+    base-65's resolve_decrypt_key falls back to argv[0] and does NOT export it,
+    and three of its four AdManager jobs pass the key that way. If resolution
+    depended on the environment alone, those three would break on their next run.
+    """
+    monkeypatch.delenv("ADMANAGER_DECRYPT_KEY", raising=False)
+    fkey = Fernet.generate_key()
+    d = tmp_path / "AdManager-Auth"
+    d.mkdir(parents=True)
+    (d / "encrypted_data.bin").write_bytes(Fernet(fkey).encrypt(b'{"type":"sa"}'))
+
+    got = backends.secret_get_file("studyflix-admanager-service-account",
+                                   key_dir=str(tmp_path), key=fkey.decode())
+    assert got == '{"type":"sa"}'
+
+
+def test_an_explicit_key_WINS_over_a_set_environment(monkeypatch, tmp_path):
+    """Passing a key is explicit intent; a stale exported value must not beat it."""
+    monkeypatch.setenv("ADMANAGER_DECRYPT_KEY", Fernet.generate_key().decode())
+    fkey = Fernet.generate_key()
+    d = tmp_path / "AdManager-Auth"
+    d.mkdir(parents=True)
+    (d / "encrypted_data.bin").write_bytes(Fernet(fkey).encrypt(b'{"type":"sa"}'))
+
+    got = backends.secret_get_file("studyflix-admanager-service-account",
+                                   key_dir=str(tmp_path), key=fkey.decode())
+    assert got == '{"type":"sa"}'
+
+
+def test_without_an_explicit_key_the_environment_is_still_used(monkeypatch, tmp_path):
+    """The existing contract is unchanged when the argument is absent."""
+    fkey = Fernet.generate_key()
+    monkeypatch.setenv("ADMANAGER_DECRYPT_KEY", fkey.decode())
+    d = tmp_path / "AdManager-Auth"
+    d.mkdir(parents=True)
+    (d / "encrypted_data.bin").write_bytes(Fernet(fkey).encrypt(b'{"type":"sa"}'))
+
+    got = backends.secret_get_file("studyflix-admanager-service-account",
+                                   key_dir=str(tmp_path))
+    assert got == '{"type":"sa"}'
+
+
+def test_secret_get_threads_the_key_to_the_file_backend(monkeypatch, tmp_path):
+    """The dispatcher must pass it through, not merely accept it."""
+    monkeypatch.delenv("ADMANAGER_DECRYPT_KEY", raising=False)
+    monkeypatch.delenv("SF_SECRET_BACKEND", raising=False)
+    fkey = Fernet.generate_key()
+    d = tmp_path / "AdManager-Auth"
+    d.mkdir(parents=True)
+    (d / "encrypted_data.bin").write_bytes(Fernet(fkey).encrypt(b'{"type":"sa"}'))
+
+    got = sfsecrets.secret_get("studyflix-admanager-service-account",
+                               key_dir=str(tmp_path), key=fkey.decode())
+    assert got == '{"type":"sa"}'

@@ -34,16 +34,24 @@ def backend():
     return os.environ.get("SF_SECRET_BACKEND", "file").lower()
 
 
-def secret_get(name, version="latest", key_dir=None):
+def secret_get(name, version="latest", key_dir=None, key=None):
     """Resolve one secret by its NAME -- the same name secretsR uses.
 
     `key_dir` is honoured by the file backend only, and is an argument rather
     than process state so two callers with different key directories cannot
     silently share one. It disappears with the transitional wrapper in E3.
+
+    `key` is the file backend's decrypt key, also an argument rather than
+    process state -- see _backends._fernet_for. It is not part of the cache
+    key: the cache is keyed by what was asked for, not by how the caller
+    proved it may have it.
     """
-    key = (name, version, key_dir)
-    if key in _CACHE:
-        return _CACHE[key]
+    # `cache_key`, not `key`: the parameter above is the DECRYPT key. An earlier
+    # draft of this plan added the parameter and left this local named `key`,
+    # which silently shadowed it and passed a tuple to Fernet.
+    cache_key = (name, version, key_dir)
+    if cache_key in _CACHE:
+        return _CACHE[cache_key]
 
     chosen = backend()
     if is_production() and chosen != "gsm":
@@ -52,7 +60,7 @@ def secret_get(name, version="latest", key_dir=None):
             "Set SF_SECRET_BACKEND=gsm." % chosen)
 
     if chosen == "file":
-        value = secret_get_file(name, key_dir, version)
+        value = secret_get_file(name, key_dir, version, key)
     elif chosen == "env":
         value = secret_get_env(name)
     elif chosen == "gsm":
@@ -60,7 +68,7 @@ def secret_get(name, version="latest", key_dir=None):
     else:
         raise RuntimeError("unknown SF_SECRET_BACKEND: %r" % chosen)
 
-    _CACHE[key] = value
+    _CACHE[cache_key] = value
     return value
 
 
