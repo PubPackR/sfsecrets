@@ -6,6 +6,7 @@ connecting belong to pgaccessPy and admanager_auth, one layer up.
 Vendored as a git submodule, never pip-installed -- the FlowForce host runs no
 dependency-installation step and the deploy only rsyncs files.
 """
+import hashlib
 import os
 
 from ._backends import secret_get_env, secret_get_file
@@ -34,16 +35,43 @@ def backend():
     return os.environ.get("SF_SECRET_BACKEND", "file").lower()
 
 
-def secret_get(name, version="latest", key_dir=None):
+def secret_get(name, version="latest", key_dir=None, key=None):
     """Resolve one secret by its NAME -- the same name secretsR uses.
 
     `key_dir` is honoured by the file backend only, and is an argument rather
     than process state so two callers with different key directories cannot
-    silently share one. It disappears with the transitional wrapper in E3.
+    silently share one. E3 adds `key` beside it, below, for the same reason
+    and in the same shape -- key_dir does not disappear.
+
+    `key` is the file backend's decrypt key, also an argument rather than
+    process state -- see _backends._fernet_for. A hash of it (never the key
+    itself) is folded into the cache key below, so a second call for the same
+    name with a DIFFERENT key cannot be served the first call's value. This
+    reverses what an earlier draft of this function did (leaving `key` out of
+    the cache key entirely) -- overruled once review pointed at secretsR's own
+    digest_key(), the same defence for the same failure class: "Two colliding
+    keys shared one cache slot, so the second caller received the first
+    caller's credential with no error."
     """
-    key = (name, version, key_dir)
-    if key in _CACHE:
-        return _CACHE[key]
+    if isinstance(key, bytes):
+        key = key.decode()
+    # `cache_key`, not `key`: the parameter above is the DECRYPT key. An earlier
+    # draft of this plan added the parameter and left this local named `key`,
+    # which silently shadowed it and passed a tuple to Fernet. The key's own
+    # digest -- never the key -- is one of the tuple's elements, not the whole
+    # of it: the cache is still keyed by what was asked for, with a digest
+    # appended for what the caller proved it may have.
+    #
+    # `is not None`, not truthiness: `key=""` must NOT land on the same ""
+    # slot as `key=None`. An earlier draft of this line used `if key else ""`,
+    # so an explicit empty key silently hit the cache entry a prior no-key
+    # call had populated and returned that call's value instead of reaching
+    # _fernet_for and failing loudly -- Finding 3's own guarantee, defeated
+    # one call site away from where it was built.
+    cache_key = (name, version, key_dir,
+                 hashlib.sha256(key.encode()).hexdigest() if key is not None else "")
+    if cache_key in _CACHE:
+        return _CACHE[cache_key]
 
     chosen = backend()
     if is_production() and chosen != "gsm":
@@ -52,7 +80,7 @@ def secret_get(name, version="latest", key_dir=None):
             "Set SF_SECRET_BACKEND=gsm." % chosen)
 
     if chosen == "file":
-        value = secret_get_file(name, key_dir, version)
+        value = secret_get_file(name, key_dir=key_dir, version=version, key=key)
     elif chosen == "env":
         value = secret_get_env(name)
     elif chosen == "gsm":
@@ -60,7 +88,7 @@ def secret_get(name, version="latest", key_dir=None):
     else:
         raise RuntimeError("unknown SF_SECRET_BACKEND: %r" % chosen)
 
-    _CACHE[key] = value
+    _CACHE[cache_key] = value
     return value
 
 

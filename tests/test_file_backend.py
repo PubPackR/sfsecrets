@@ -155,3 +155,191 @@ def test_the_file_backend_still_accepts_latest(monkeypatch, tmp_path):
     with pytest.raises(FileNotFoundError):
         backends.secret_get_file("studyflix-admanager-service-account",
                                  key_dir=str(tmp_path), version="latest")
+
+
+def test_an_explicit_key_is_used_instead_of_the_environment(monkeypatch, tmp_path):
+    """The caller may hold the key without the environment holding it.
+
+    base-65's resolve_decrypt_key falls back to argv[0] and does NOT export it,
+    and three of its four AdManager jobs pass the key that way. If resolution
+    depended on the environment alone, those three would break on their next run.
+    """
+    monkeypatch.delenv("ADMANAGER_DECRYPT_KEY", raising=False)
+    fkey = Fernet.generate_key()
+    d = tmp_path / "AdManager-Auth"
+    d.mkdir(parents=True)
+    (d / "encrypted_data.bin").write_bytes(Fernet(fkey).encrypt(b'{"type":"sa"}'))
+
+    got = backends.secret_get_file("studyflix-admanager-service-account",
+                                   key_dir=str(tmp_path), key=fkey.decode())
+    assert got == '{"type":"sa"}'
+
+
+def test_an_explicit_key_WINS_over_a_set_environment(monkeypatch, tmp_path):
+    """Passing a key is explicit intent; a stale exported value must not beat it."""
+    monkeypatch.setenv("ADMANAGER_DECRYPT_KEY", Fernet.generate_key().decode())
+    fkey = Fernet.generate_key()
+    d = tmp_path / "AdManager-Auth"
+    d.mkdir(parents=True)
+    (d / "encrypted_data.bin").write_bytes(Fernet(fkey).encrypt(b'{"type":"sa"}'))
+
+    got = backends.secret_get_file("studyflix-admanager-service-account",
+                                   key_dir=str(tmp_path), key=fkey.decode())
+    assert got == '{"type":"sa"}'
+
+
+def test_without_an_explicit_key_the_environment_is_still_used(monkeypatch, tmp_path):
+    """The existing contract is unchanged when the argument is absent."""
+    fkey = Fernet.generate_key()
+    monkeypatch.setenv("ADMANAGER_DECRYPT_KEY", fkey.decode())
+    d = tmp_path / "AdManager-Auth"
+    d.mkdir(parents=True)
+    (d / "encrypted_data.bin").write_bytes(Fernet(fkey).encrypt(b'{"type":"sa"}'))
+
+    got = backends.secret_get_file("studyflix-admanager-service-account",
+                                   key_dir=str(tmp_path))
+    assert got == '{"type":"sa"}'
+
+
+def test_secret_get_threads_the_key_to_the_file_backend(monkeypatch, tmp_path):
+    """The dispatcher must pass it through, not merely accept it."""
+    monkeypatch.delenv("ADMANAGER_DECRYPT_KEY", raising=False)
+    monkeypatch.delenv("SF_SECRET_BACKEND", raising=False)
+    fkey = Fernet.generate_key()
+    d = tmp_path / "AdManager-Auth"
+    d.mkdir(parents=True)
+    (d / "encrypted_data.bin").write_bytes(Fernet(fkey).encrypt(b'{"type":"sa"}'))
+
+    got = sfsecrets.secret_get("studyflix-admanager-service-account",
+                               key_dir=str(tmp_path), key=fkey.decode())
+    assert got == '{"type":"sa"}'
+
+
+def test_secret_get_accepts_a_key_passed_as_bytes(monkeypatch, tmp_path):
+    """secret_get's cache key hashes `key` with hashlib.sha256(key.encode()),
+    computed BEFORE dispatching to the file backend -- so a bytes key would
+    hit that same AttributeError one layer higher than _fernet_for's own
+    normalisation if secret_get did not also normalise it first."""
+    monkeypatch.delenv("ADMANAGER_DECRYPT_KEY", raising=False)
+    monkeypatch.delenv("SF_SECRET_BACKEND", raising=False)
+    fkey = Fernet.generate_key()
+    d = tmp_path / "AdManager-Auth"
+    d.mkdir(parents=True)
+    (d / "encrypted_data.bin").write_bytes(Fernet(fkey).encrypt(b'{"type":"sa"}'))
+
+    got = sfsecrets.secret_get("studyflix-admanager-service-account",
+                               key_dir=str(tmp_path), key=fkey)
+    assert got == '{"type":"sa"}'
+
+
+def test_a_wrong_explicit_key_names_the_argument_not_the_unset_env_var(monkeypatch, tmp_path):
+    """Before `key` existed, ADMANAGER_DECRYPT_KEY was the only possible
+    source, so naming it in the error was always true. It can now be a lie --
+    precisely for base-65's three AdManager jobs that hold the key from
+    argv[0] and never export it. An operator debugging a failed run must be
+    told the argument was wrong, not sent chasing an empty environment
+    variable."""
+    monkeypatch.delenv("ADMANAGER_DECRYPT_KEY", raising=False)
+    fkey = Fernet.generate_key()
+    wrong_key = Fernet.generate_key()
+    d = tmp_path / "AdManager-Auth"
+    d.mkdir(parents=True)
+    (d / "encrypted_data.bin").write_bytes(Fernet(fkey).encrypt(b'{"type":"sa"}'))
+
+    with pytest.raises(RuntimeError, match=r"the key in the key argument did not open"):
+        backends.secret_get_file("studyflix-admanager-service-account",
+                                 key_dir=str(tmp_path), key=wrong_key.decode())
+
+
+def test_a_key_passed_as_bytes_works_the_same_as_str(monkeypatch, tmp_path):
+    """Fernet.generate_key() returns bytes -- the obvious way to make a key,
+    and exactly what every test in this file calls before .decode(). Passing
+    the bytes straight through must not raise a bare AttributeError from
+    raw.encode() finding a bytes object with no such method; os.environ.get()
+    could only ever return str, so this path did not exist before `key` did."""
+    monkeypatch.delenv("ADMANAGER_DECRYPT_KEY", raising=False)
+    fkey = Fernet.generate_key()
+    d = tmp_path / "AdManager-Auth"
+    d.mkdir(parents=True)
+    (d / "encrypted_data.bin").write_bytes(Fernet(fkey).encrypt(b'{"type":"sa"}'))
+
+    got = backends.secret_get_file("studyflix-admanager-service-account",
+                                   key_dir=str(tmp_path), key=fkey)
+    assert got == '{"type":"sa"}'
+
+
+def test_an_explicit_empty_key_fails_loudly_instead_of_falling_back(monkeypatch, tmp_path):
+    """key="" is a caller's mistake, not "unspecified" -- checked with `is
+    None`, not truthiness, matching ad_manager_client's own `is not None`
+    guard ("an empty key is never valid for Fernet") and secretsR's nzchar()
+    validation. base-65's resolve_decrypt_key returns argv[0] whenever argv is
+    non-empty, so a FlowForce command whose shell variable expands empty
+    yields "", not None -- and must not silently resolve via a correctly-set
+    environment variable nobody intended to use."""
+    fkey = Fernet.generate_key()
+    monkeypatch.setenv("ADMANAGER_DECRYPT_KEY", fkey.decode())
+    d = tmp_path / "AdManager-Auth"
+    d.mkdir(parents=True)
+    (d / "encrypted_data.bin").write_bytes(Fernet(fkey).encrypt(b'{"type":"sa"}'))
+
+    with pytest.raises(RuntimeError, match="is not set and no key was passed"):
+        backends.secret_get_file("studyflix-admanager-service-account",
+                                 key_dir=str(tmp_path), key="")
+
+
+def test_a_different_key_for_the_same_name_does_not_reuse_the_cached_value(monkeypatch, tmp_path):
+    """secretsR's digest_key() folds a hash of the key into its cache key for
+    exactly this reason: "Two colliding keys shared one cache slot, so the
+    second caller received the first caller's credential with no error." A
+    second secret_get() call for the same name, version and key_dir but a
+    DIFFERENT key must not be served the first call's cached value -- it must
+    try to decrypt with the new key and fail, not return stale data with no
+    error."""
+    monkeypatch.delenv("ADMANAGER_DECRYPT_KEY", raising=False)
+    monkeypatch.delenv("SF_SECRET_BACKEND", raising=False)
+
+    first_key = Fernet.generate_key()
+    second_key = Fernet.generate_key()
+    d = tmp_path / "AdManager-Auth"
+    d.mkdir(parents=True)
+    (d / "encrypted_data.bin").write_bytes(Fernet(first_key).encrypt(b'{"type":"sa"}'))
+
+    first = sfsecrets.secret_get("studyflix-admanager-service-account",
+                                 key_dir=str(tmp_path), key=first_key.decode())
+    assert first == '{"type":"sa"}'
+
+    # Same name, version and key_dir as the call above -- only `key` differs.
+    # If the cache key did not include it, this would silently return the
+    # first call's cached value instead of attempting to decrypt with the
+    # (wrong, for this file) second key.
+    with pytest.raises(RuntimeError, match="did not open"):
+        sfsecrets.secret_get("studyflix-admanager-service-account",
+                             key_dir=str(tmp_path), key=second_key.decode())
+
+
+def test_an_explicit_empty_key_does_not_hit_a_prior_no_key_calls_cache_slot(monkeypatch, tmp_path):
+    """key=None and key="" are both falsy, but they are not the same request.
+    A cache-key expression that folds the key's digest in with `if key else
+    ""` sends both to the same "" slot: a prior no-key call (environment
+    used, succeeds) then leaves a cache entry that a later key="" call --
+    which Finding 3 and the README both say must fail loudly -- silently
+    hits instead, returning the first call's value with no error. Reproduced
+    through sfsecrets.secret_get, not secret_get_file directly:
+    secret_get_file has no cache, and the existing single-key-argument empty
+    -key test never follows a successful no-key call to the same name."""
+    monkeypatch.delenv("SF_SECRET_BACKEND", raising=False)
+    fkey = Fernet.generate_key()
+    monkeypatch.setenv("ADMANAGER_DECRYPT_KEY", fkey.decode())
+    d = tmp_path / "AdManager-Auth"
+    d.mkdir(parents=True)
+    (d / "encrypted_data.bin").write_bytes(Fernet(fkey).encrypt(b'{"type":"sa"}'))
+
+    first = sfsecrets.secret_get("studyflix-admanager-service-account",
+                                 key_dir=str(tmp_path))
+    assert first == '{"type":"sa"}'
+
+    # Same name, version and key_dir as the call above; key="" this time.
+    # Must reach _fernet_for and fail loudly, not be served the cached value.
+    with pytest.raises(RuntimeError, match="is not set and no key was passed"):
+        sfsecrets.secret_get("studyflix-admanager-service-account",
+                             key_dir=str(tmp_path), key="")

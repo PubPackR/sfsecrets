@@ -13,24 +13,60 @@ _UNSET = object()  # marks "no value produced" without attaching implicit
                     # exception context -- see _join_legacy_parts.
 
 
-def _fernet_for(derivation, env_var):
-    raw = os.environ.get(env_var, "")
+def _key_source(env_var, key):
+    """Where the raw decrypt material came from, for error messages. Before
+    `key` existed the environment variable was the only possible source, so
+    naming it was always true. It can now be a lie: three of base-65's four
+    AdManager jobs hold the key from argv[0] and never export it, so an
+    operator debugging a failed run must not be sent to an environment
+    variable that is empty and irrelevant.
+
+    `is None`, not truthiness -- matches the precedence check in _fernet_for,
+    so this always names the source _fernet_for actually used.
+    """
+    return "the key argument" if key is not None else env_var
+
+
+def _fernet_for(derivation, env_var, key=None):
+    """Build the Fernet. `key` is an ARGUMENT before it is an environment
+    variable, for the same reason key_dir is: a caller may legitimately hold a
+    key the environment does not. base-65's resolve_decrypt_key takes it from
+    argv[0] and does not export it.
+
+    NOT os.environ.setdefault. An earlier draft of the key_dir work did exactly
+    that, and review proved two callers in one process silently shared the
+    first's value.
+
+    The precedence check is `is None`, not truthiness: an explicitly passed
+    "" is a caller's mistake, not "unspecified", and must fail as itself
+    rather than silently falling back to the environment. Matches
+    ad_manager_client's own `is not None` guard and secretsR's nzchar()
+    validation -- both treat a set-but-empty key as invalid, never as absent.
+    """
+    raw = os.environ.get(env_var, "") if key is None else key
+    if isinstance(raw, bytes):
+        # Fernet.generate_key() returns bytes -- the obvious way to make a
+        # key, and what every test here calls before .decode(). os.environ
+        # values are always str, so only the argument path can land here.
+        raw = raw.decode()
     if not raw:
         raise RuntimeError(
-            "%s is not set. Pass it through the environment, never on the "
-            "command line -- /proc/<pid>/cmdline is world-readable." % env_var)
+            "%s is not set and no key was passed. Pass it through the "
+            "environment or as an argument, never on the command line -- "
+            "/proc/<pid>/cmdline is world-readable." % env_var)
     if derivation == "derived":
-        key = base64.urlsafe_b64encode(hashlib.sha256(raw.encode()).digest())
+        fernet_key = base64.urlsafe_b64encode(hashlib.sha256(raw.encode()).digest())
     else:
-        key = raw.encode()
+        fernet_key = raw.encode()
     try:
-        return Fernet(key)
+        return Fernet(fernet_key)
     except (ValueError, TypeError):
         raise RuntimeError(
-            "%s is not a usable Fernet key for a %r secret." % (env_var, derivation))
+            "%s is not a usable Fernet key for a %r secret."
+            % (_key_source(env_var, key), derivation))
 
 
-def secret_get_file(name, key_dir=None, version="latest"):
+def secret_get_file(name, key_dir=None, version="latest", key=None):
     """Resolve from keys/. `key_dir` is an ARGUMENT, never process state.
 
     An earlier draft read it from SF_KEY_DIR set by the caller with
@@ -38,6 +74,8 @@ def secret_get_file(name, key_dir=None, version="latest"):
     key_dirs in one process then silently shared the first one's -- verified in
     review: the second returned the first's host, database and user with no
     error. base-65's own test suite exercises exactly that via tmp_path.
+
+    `key` is the same story for the decrypt key itself -- see _fernet_for.
     """
     if version != "latest":
         raise ValueError(
@@ -49,7 +87,7 @@ def secret_get_file(name, key_dir=None, version="latest"):
             "%s has no file-backend mapping. Add it to _legacy_map.FILES." % name)
     paths, derivation, env_var = FILES[name]
     root = key_dir or os.environ.get("SF_KEY_DIR") or DEFAULT_KEY_DIR
-    fernet = _fernet_for(derivation, env_var)
+    fernet = _fernet_for(derivation, env_var, key)
 
     parts = []
     for rel in paths:
@@ -63,7 +101,7 @@ def secret_get_file(name, key_dir=None, version="latest"):
         except InvalidToken:
             raise RuntimeError(
                 "the key in %s did not open %s. Right shape, wrong key, or the "
-                "file was re-encrypted." % (env_var, path))
+                "file was re-encrypted." % (_key_source(env_var, key), path))
 
     if len(parts) == 1:
         return parts[0]

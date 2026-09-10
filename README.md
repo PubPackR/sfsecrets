@@ -66,8 +66,8 @@ eventually return for that name.
 | Variable | Default | Meaning |
 |---|---|---|
 | `SF_SECRET_BACKEND` | `file` | `file`, `env`, or `gsm` |
-| `DB_MASTER_KEY` | -- | Required by the file backend for `studyflix-postgresql-connection`. |
-| `ADMANAGER_DECRYPT_KEY` | -- | Required by the file backend for `studyflix-admanager-service-account`. |
+| `DB_MASTER_KEY` | -- | Required by the file backend for `studyflix-postgresql-connection`, unless `key` is passed explicitly. |
+| `ADMANAGER_DECRYPT_KEY` | -- | Required by the file backend for `studyflix-admanager-service-account`, unless `key` is passed explicitly. |
 | `SF_KEY_DIR` | `../../keys` | Directory holding the encrypted legacy keyfiles, if `key_dir` is not passed explicitly. |
 
 `key_dir` is also accepted as a direct argument to `secret_get`, and takes
@@ -75,6 +75,14 @@ precedence over `SF_KEY_DIR`. It is an argument rather than something read from
 process state on purpose: two callers in the same process resolving from
 different key directories must never silently share one. Pass it explicitly
 whenever more than one key directory can be in play.
+
+`key` is accepted the same way, for the decrypt key itself, and an explicit
+`key` **always wins over the environment variable** -- checked with `is not
+None`, not truthiness, so an explicitly passed `""` fails loudly rather than
+silently falling back to `DB_MASTER_KEY` / `ADMANAGER_DECRYPT_KEY`. This is
+for callers that legitimately hold the key without the environment holding
+it: base-65's `resolve_decrypt_key` falls back to `argv[0]` and does not
+export it, so three of its four AdManager jobs pass the key exactly this way.
 
 ## Installation
 
