@@ -315,3 +315,31 @@ def test_a_different_key_for_the_same_name_does_not_reuse_the_cached_value(monke
     with pytest.raises(RuntimeError, match="did not open"):
         sfsecrets.secret_get("studyflix-admanager-service-account",
                              key_dir=str(tmp_path), key=second_key.decode())
+
+
+def test_an_explicit_empty_key_does_not_hit_a_prior_no_key_calls_cache_slot(monkeypatch, tmp_path):
+    """key=None and key="" are both falsy, but they are not the same request.
+    A cache-key expression that folds the key's digest in with `if key else
+    ""` sends both to the same "" slot: a prior no-key call (environment
+    used, succeeds) then leaves a cache entry that a later key="" call --
+    which Finding 3 and the README both say must fail loudly -- silently
+    hits instead, returning the first call's value with no error. Reproduced
+    through sfsecrets.secret_get, not secret_get_file directly:
+    secret_get_file has no cache, and the existing single-key-argument empty
+    -key test never follows a successful no-key call to the same name."""
+    monkeypatch.delenv("SF_SECRET_BACKEND", raising=False)
+    fkey = Fernet.generate_key()
+    monkeypatch.setenv("ADMANAGER_DECRYPT_KEY", fkey.decode())
+    d = tmp_path / "AdManager-Auth"
+    d.mkdir(parents=True)
+    (d / "encrypted_data.bin").write_bytes(Fernet(fkey).encrypt(b'{"type":"sa"}'))
+
+    first = sfsecrets.secret_get("studyflix-admanager-service-account",
+                                 key_dir=str(tmp_path))
+    assert first == '{"type":"sa"}'
+
+    # Same name, version and key_dir as the call above; key="" this time.
+    # Must reach _fernet_for and fail loudly, not be served the cached value.
+    with pytest.raises(RuntimeError, match="is not set and no key was passed"):
+        sfsecrets.secret_get("studyflix-admanager-service-account",
+                             key_dir=str(tmp_path), key="")

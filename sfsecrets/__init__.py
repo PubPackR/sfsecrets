@@ -61,8 +61,15 @@ def secret_get(name, version="latest", key_dir=None, key=None):
     # digest -- never the key -- is one of the tuple's elements, not the whole
     # of it: the cache is still keyed by what was asked for, with a digest
     # appended for what the caller proved it may have.
+    #
+    # `is not None`, not truthiness: `key=""` must NOT land on the same ""
+    # slot as `key=None`. An earlier draft of this line used `if key else ""`,
+    # so an explicit empty key silently hit the cache entry a prior no-key
+    # call had populated and returned that call's value instead of reaching
+    # _fernet_for and failing loudly -- Finding 3's own guarantee, defeated
+    # one call site away from where it was built.
     cache_key = (name, version, key_dir,
-                 hashlib.sha256(key.encode()).hexdigest() if key else "")
+                 hashlib.sha256(key.encode()).hexdigest() if key is not None else "")
     if cache_key in _CACHE:
         return _CACHE[cache_key]
 
