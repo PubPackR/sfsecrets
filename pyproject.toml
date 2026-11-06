@@ -1,15 +1,16 @@
 [project]
 name = "sfsecrets"
-version = "0.1.0"
+version = "0.2.0"
 description = "Credential resolution for Studyflix Python apps -- the Python twin of secretsR."
 readme = "README.md"
 # Matches the production interpreter on shiny.studyflix.info (/usr/bin/python3 == 3.12.3).
 requires-python = ">=3.12"
 dependencies = [
-    # Pinned to the version confirmed installed on shiny.studyflix.info, because
+    # Pinned to the versions confirmed installed on shiny.studyflix.info, because
     # production consumes this package as a git submodule with no install step --
     # the host's hand-installed packages are what actually get imported.
-    "cryptography==46.0.4",
+    # cryptography was the file backend's (Fernet) and left with it in 0.2.0.
+    #
     # Both arrive on the host transitively via googleads, which base-65 uses for
     # the Ad Manager API. Declared here so CI tests against the versions
     # production actually imports; NOT installed by any deploy step.

@@ -1,11 +1,12 @@
 """Finding 6: `import sfsecrets` must not require requests or urllib3.
 
-_gsm.py's own comment says the module "must stay importable on the file
+_gsm.py's own comment says the module "must stay importable on the env
 path", where google-auth (and, transitively, requests/urllib3) may not even
-be installed -- the file backend needs only cryptography. Verified with an
-import blocker: before the E2 gsm-backend work, blocking requests or urllib3
+be installed -- local development and CI on the env backend. (Until 0.2.0 the
+same held for the file backend, which needed only cryptography.) Verified with
+an import blocker: before the E2 gsm-backend work, blocking requests or urllib3
 still imported fine; a module-level `import requests` in _gsm.py made both
-fail on this branch. requests is used ONLY inside secret_get_gsm's except
+fail on that branch. requests is used ONLY inside secret_get_gsm's except
 clauses (and google.auth's own transport, which is imported lazily inside
 _session()), so it must be imported lazily there too -- exactly like the
 existing lazy `from google.auth.exceptions import RefreshError` a few lines

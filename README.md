@@ -1,7 +1,7 @@
 # sfsecrets
 
 Credential resolution for Studyflix Python apps -- the Python twin of the R
-package `secretsR`. One function, three backends:
+package `secretsR`. One function, two backends:
 
 ```python
 import sfsecrets
@@ -14,75 +14,45 @@ the R side. Resolution only: this package knows nothing about databases or Ad
 Manager. Shaping the resolved value into a connection belongs one layer up, in
 packages like `pgaccessPy`.
 
-## Status
-
-Two backends are implemented. The **file backend** reads the encrypted legacy
-keyfiles under `keys/` that `secretsR` also reads, so both languages resolve
-the same secrets from the same files during the migration. The **gsm** backend
-(Google Secret Manager, the migration's actual target) reads secrets from
-Secret Manager over its REST API, authenticating via Application Default
-Credentials.
-
 ## Backends
 
-Selected via the `SF_SECRET_BACKEND` environment variable (default `file`):
+Selected via the `SF_SECRET_BACKEND` environment variable (default `gsm`):
 
 | Backend | Selected by | Behaviour |
 |---|---|---|
-| `file` | `SF_SECRET_BACKEND=file` (default) | Decrypts the legacy keyfiles under `keys/` with Fernet. |
+| `gsm` | `SF_SECRET_BACKEND=gsm`, or unset | Reads the secret from Google Secret Manager over REST, authenticating via Application Default Credentials. |
 | `env` | `SF_SECRET_BACKEND=env` | Reads `SF_SECRET_<NAME>` (name upper-cased, `-` to `_`). For local dev / CI. |
-| `gsm` | `SF_SECRET_BACKEND=gsm` | Reads the secret from Google Secret Manager over REST, authenticating via Application Default Credentials. |
 
 On a host `sfsecrets.is_production()` considers production (the marker file
 `/etc/studyflix/production` exists, or `GOOGLE_APPLICATION_CREDENTIALS` names a
 file that exists), any backend other than `gsm` is refused with a
-`RuntimeError` rather than silently falling back to reading `keys/`.
-
-## The legacy map
-
-`sfsecrets/_legacy_map.py` is the file backend's routing table: secret name ->
-which file(s) under `keys/` hold it, how the Fernet key is derived, and which
-environment variable carries that key. It is data on purpose -- adding a secret
-the file backend should resolve is a new row, not new code.
+`RuntimeError`.
 
 The secret names are a **contract with R**: `secretsR` resolves the same
 strings, so a name is never invented on the Python side or altered without
-updating both.
+updating both. `sfsecrets.SERVICES` maps service names to them.
 
-Two derivations exist and must not be conflated:
+## The file backend is gone (0.2.0)
 
-- **`derived`** (`DB_MASTER_KEY`) -- the Fernet key is
-  `base64.urlsafe_b64encode(sha256(raw_key).digest())`.
-- **`verbatim`** (`ADMANAGER_DECRYPT_KEY`) -- the environment variable's value
-  *is* the Fernet key, unmodified.
+0.2.0 removed the `file` backend, which decrypted the legacy keyfiles under
+`keys/` with Fernet, together with its routing table (`FILES`) and the
+`cryptography` dependency (Plan F). Every runtime resolves from Secret
+Manager.
 
-`studyflix-postgresql-connection` is one secret name backed by **two** legacy
-files (server settings JSON, and the password). The file backend decrypts both
-and merges them into one JSON object -- the same shape the `gsm` backend will
-eventually return for that name.
+- `SF_SECRET_BACKEND=file` raises a `RuntimeError` naming the removal, from
+  `backend()` and from `secret_get()`.
+- `secret_get()` still accepts `key_dir` and `key` for this release, ignores
+  them as the `gsm` and `env` backends always did, and emits a
+  `DeprecationWarning` when either is passed. Callers pass `key_dir` on every
+  call, so refusing it would break them the day they move to 0.2.0. Both
+  arguments go in the next release.
+- `DB_MASTER_KEY`, `ADMANAGER_DECRYPT_KEY` and `SF_KEY_DIR` are read by nothing.
 
 ## Configuration
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SF_SECRET_BACKEND` | `file` | `file`, `env`, or `gsm` |
-| `DB_MASTER_KEY` | -- | Required by the file backend for `studyflix-postgresql-connection`, unless `key` is passed explicitly. |
-| `ADMANAGER_DECRYPT_KEY` | -- | Required by the file backend for `studyflix-admanager-service-account`, unless `key` is passed explicitly. |
-| `SF_KEY_DIR` | `../../keys` | Directory holding the encrypted legacy keyfiles, if `key_dir` is not passed explicitly. |
-
-`key_dir` is also accepted as a direct argument to `secret_get`, and takes
-precedence over `SF_KEY_DIR`. It is an argument rather than something read from
-process state on purpose: two callers in the same process resolving from
-different key directories must never silently share one. Pass it explicitly
-whenever more than one key directory can be in play.
-
-`key` is accepted the same way, for the decrypt key itself, and an explicit
-`key` **always wins over the environment variable** -- checked with `is not
-None`, not truthiness, so an explicitly passed `""` fails loudly rather than
-silently falling back to `DB_MASTER_KEY` / `ADMANAGER_DECRYPT_KEY`. This is
-for callers that legitimately hold the key without the environment holding
-it: base-65's `resolve_decrypt_key` falls back to `argv[0]` and does not
-export it, so three of its four AdManager jobs pass the key exactly this way.
+| `SF_SECRET_BACKEND` | `gsm` | `gsm` or `env` |
 
 ## Installation
 
@@ -92,8 +62,8 @@ files, so whatever is hand-installed on the host is what actually gets
 imported. `pyproject.toml` exists so the package is legible and testable on
 its own, not because anything installs it from here.
 
-The third-party dependencies -- `cryptography`, `google-auth`, `requests` and
-`urllib3` -- are pinned in `pyproject.toml` to the versions measured installed
+The third-party dependencies -- `google-auth`, `requests` and `urllib3` -- are
+pinned in `pyproject.toml` to the versions measured installed
 on `shiny.studyflix.info`. The rule is not "add nothing": it is add nothing the
 host does not already have, since the deploy only rsyncs files and runs no
 install step.
@@ -107,6 +77,6 @@ uv run pytest tests -v
 
 ## Tests
 
-`tests/test_file_backend.py` covers the file backend end to end: decrypting the
-legacy keyfiles, merging the Postgres pair into one object, and confirming that
-two `key_dir` values used in the same process never bleed into each other.
+`tests/test_secret_get.py` covers dispatch, the production guard, the cache
+and the 0.2.0 removal; the `tests/test_gsm_*.py` files cover the gsm backend
+without a network.
