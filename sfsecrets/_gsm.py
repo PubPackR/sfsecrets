@@ -2,7 +2,7 @@
 
 Apart from _backends.py because this is the only backend with a network, a
 retry policy and an authentication story. _backends.py promises "one function
-per backend, no shared state"; gsm needs helpers the other two do not.
+per backend, no shared state"; gsm needs helpers env does not.
 
 Parity with secretsR is deliberate and is not transcription. Where secretsR
 works around a gap in R's tooling that Python does not have -- its hand-rolled
@@ -168,11 +168,11 @@ def _session_reset():
 
 def secret_get_gsm(name, version="latest"):
     # Deferred, matching _session()'s own lazy google.auth imports: the module
-    # must stay importable on the file path, where google-auth may not even be
-    # what's on the host's Python path. requests is deferred for the same
-    # reason -- it is used here ONLY for these two exception classes, and the
-    # file backend must not drag in requests/urllib3 as a hard import-time
-    # dependency.
+    # must stay importable on the env path, where google-auth may not even be
+    # what's on the Python path (local development, CI). requests is deferred
+    # for the same reason -- it is used here ONLY for these two exception
+    # classes, and the env backend must not drag in requests/urllib3 as a hard
+    # import-time dependency.
     import requests
     from google.auth.exceptions import RefreshError, TransportError
 
